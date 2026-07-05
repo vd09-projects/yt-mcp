@@ -1,0 +1,8 @@
+bin/
+state/
+config.json
+*.log
+.DS_Store
+
+# Claude handoff state — per-machine, regenerable; never commit
+.claude/handoff/

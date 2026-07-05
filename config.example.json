@@ -1,0 +1,25 @@
+{
+  "oauth": {
+    "client_id": "${YT_CLIENT_ID}",
+    "client_secret": "${YT_CLIENT_SECRET}"
+  },
+  "state_dir": "state",
+  "block_cross_channel_duplicates": true,
+  "min_seconds_between_uploads": 0,
+  "upload_chunk_size_mb": 8,
+  "channels": {
+    "main": {
+      "refresh_token": "${YT_REFRESH_TOKEN_MAIN}",
+      "description": "Primary long-form channel",
+      "default_category_id": "28",
+      "default_privacy": "unlisted",
+      "default_tags": ["tech"]
+    },
+    "shorts": {
+      "refresh_token": "${YT_REFRESH_TOKEN_SHORTS}",
+      "description": "Shorts channel",
+      "default_category_id": "24",
+      "default_privacy": "unlisted"
+    }
+  }
+}
