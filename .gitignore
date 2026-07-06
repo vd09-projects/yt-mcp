@@ -2,6 +2,11 @@ bin/
 state/
 config.json
 *.log
+# Per-channel OAuth token files (secret-bearing), wherever they land.
+# The .tmp form is the atomic-write staging file — ignore it too so a crash
+# between write and rename can't leave an un-ignored secret behind.
+*.token.json
+*.token.json.tmp
 .DS_Store
 
 # Secret-bearing env files (client secret + refresh tokens). Only .env.example

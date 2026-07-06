@@ -1,11 +1,14 @@
 // yt-authorize performs the one-time 3-legged OAuth2 consent grant for ONE
 // channel (spec §5.1: one refresh token per channel, obtained via a one-time
-// consent grant) and prints the refresh token to store in config/env.
+// consent grant) and writes the token to that channel's token_file — the path
+// configured in config.json (GOOGLE_APPLICATION_CREDENTIALS-style). No manual
+// copy-paste into an env var. With neither --channel nor --out it falls back to
+// printing the token.
 //
 // Usage:
 //
-//	yt-authorize --config config.json
-//	yt-authorize --client-id ... --client-secret ...
+//	yt-authorize --config config.json --channel main
+//	yt-authorize --client-id ... --client-secret ... --out state/main.token.json
 //
 // Run it once per channel. Sign in with the Google account that manages the
 // target channel and, if prompted, pick the correct brand/channel account —
@@ -43,6 +46,8 @@ func main() {
 	clientSecret := flag.String("client-secret", "", "OAuth client secret (or set YT_CLIENT_SECRET / --env-file)")
 	extraScopes := flag.String("scopes", "", "comma-separated EXTRA OAuth scopes to request beyond the upload defaults, e.g. https://www.googleapis.com/auth/yt-analytics.readonly for a future analytics server. Prefer minting a SEPARATE token per capability (least privilege) over one token with every scope")
 	envFile := flag.String("env-file", "", "optional dotenv file of KEY=VALUE secrets, loaded before credentials resolve; file values override the shell environment")
+	channel := flag.String("channel", "", "channel alias to write the token for; its token_file path is resolved from --config. The token JSON is written there directly (no copy-paste)")
+	out := flag.String("out", "", "explicit path to write the token JSON to, overriding the --channel/--config-resolved path")
 	flag.Parse()
 
 	// Load the env file (if any) first, so both config.json ${VAR} expansion and
@@ -67,6 +72,21 @@ func main() {
 	id, secret := resolveCreds(*clientID, *clientSecret, oc)
 	if id == "" || secret == "" {
 		log.Fatal("client credentials required: pass --client-id/--client-secret, --config, --env-file, or set YT_CLIENT_ID/YT_CLIENT_SECRET")
+	}
+
+	// Resolve where to write the token. --out wins; otherwise --channel resolves
+	// the path from the config's token_file field. If neither is given we fall
+	// back to printing the token (legacy behavior) with a nudge.
+	outPath := *out
+	if outPath == "" && *channel != "" {
+		if *cfgPath == "" {
+			log.Fatal("--channel requires --config (the token_file path is read from it); or pass --out explicitly")
+		}
+		p, err := config.ResolveTokenFilePath(*cfgPath, *channel)
+		if err != nil {
+			log.Fatal(err)
+		}
+		outPath = p
 	}
 
 	// Loopback redirect on a random port — allowed for "Desktop app" OAuth
@@ -166,15 +186,41 @@ func main() {
 	if err != nil {
 		log.Fatalf("channels.list failed (token was issued, but verification failed): %v", err)
 	}
+	var channelID, channelTitle string
 	if len(resp.Items) > 0 {
-		fmt.Printf("\nAuthorized channel: %s (id: %s)\n", resp.Items[0].Snippet.Title, resp.Items[0].Id)
+		channelID = resp.Items[0].Id
+		channelTitle = resp.Items[0].Snippet.Title
+		fmt.Printf("\nAuthorized channel: %s (id: %s)\n", channelTitle, channelID)
 	} else {
 		fmt.Println("\nToken issued, but no YouTube channel is attached to this account.")
 	}
 
-	fmt.Println("\nRefresh token — store it as the env var referenced from config.json for this channel:")
-	fmt.Println()
-	fmt.Println(tok.RefreshToken)
+	tf := &config.TokenFile{
+		RefreshToken: tok.RefreshToken,
+		ChannelID:    channelID,
+		ChannelTitle: channelTitle,
+		ObtainedAt:   config.NowRFC3339(),
+		Scopes:       scopes,
+	}
+
+	if outPath != "" {
+		if err := config.WriteTokenFile(outPath, tf); err != nil {
+			// The token IS valid — surface it so a write failure isn't a total
+			// loss and the operator can place it manually.
+			log.Printf("WARNING: token was issued but writing %s failed: %v", outPath, err)
+			fmt.Println("\nRefresh token (write failed — store it manually):")
+			fmt.Println()
+			fmt.Println(tok.RefreshToken)
+		} else {
+			fmt.Printf("\nWrote token file: %s\n", outPath)
+		}
+	} else {
+		fmt.Println("\nNo --channel/--out given, so printing the refresh token. Re-run with")
+		fmt.Println("--channel <alias> --config config.json to write it to the channel's token_file directly.")
+		fmt.Println()
+		fmt.Println(tok.RefreshToken)
+	}
+
 	fmt.Println()
 	fmt.Println("Reminder (spec §5.1): while the OAuth consent screen is in \"Testing\" publishing status,")
 	fmt.Println("this token expires in ~7 days and this flow must be re-run. Complete Google app")

@@ -39,10 +39,10 @@ Design decisions, mapped to the problem statement:
 | Spec | How it's implemented |
 |---|---|
 | §3 caller decides, tool executes | The tool has no channel-selection logic. `channel` is a required input; aliases come from static config. |
-| §4.1 static routing | `config.json` maps alias → refresh token + defaults. Adding a channel = config edit + one `yt-authorize` run. |
+| §4.1 static routing | `config.json` maps alias → token file + defaults. Adding a channel = config edit + one `yt-authorize` run. |
 | §4.2 never silently public | Privacy default chain: caller → channel default → `unlisted`. Scheduled publishes force/require `private`. |
 | §4.3 Shorts are declared, not inferred | Explicit `is_short` flag; the tool appends `#Shorts` to the description if missing. Deterministic. |
-| §5.1 one refresh token per channel | Shared OAuth client, per-channel token in config. `invalid_grant` failures carry a hint about the 7-day Testing-mode expiry. |
+| §5.1 one refresh token per channel | Shared OAuth client, per-channel token in a `token_file` on disk. `invalid_grant` failures carry a hint about the 7-day Testing-mode expiry. |
 | §5.3 platform risk guards | Cross-channel duplicate detection via content SHA-256 (warn or block, configurable) and an optional minimum-spacing guard across channels. |
 | §6 idempotency | Required key (caller-supplied or derived as `sha256:<hash>@<channel>`). A prior success returns the existing result. In-flight keys are locked against concurrent retries. |
 | §7 failure handling | Every failure is a structured `{stage, category, hint}`. Partial failures after upload roll back (delete the video) by default; a failed rollback surfaces the orphaned video ID explicitly. |
@@ -99,14 +99,19 @@ YT_CLIENT_SECRET=...
 ```
 
 ```bash
-./bin/yt-authorize --config config.json --env-file env/shorts.env
+./bin/yt-authorize --config config.json --channel shorts --env-file env/shorts.env
 ```
 
 Open the printed URL, sign in with the account that manages the target
 channel (pick the right brand account if prompted), and approve. The CLI
-prints **which channel the token controls** plus the refresh token. Add it to
-that same env file under the alias its channel block references, e.g.
-`YT_REFRESH_TOKEN_SHORTS=...`. Repeat per channel (a separate env file each).
+prints **which channel the token controls** and **writes the token JSON
+directly** to that channel's `token_file` path (resolved from the config) —
+no copy-paste. Repeat per channel with its `--channel <alias>`. Without
+`--channel`/`--out` the CLI falls back to printing the raw token.
+
+The token file (`{ refresh_token, channel_id, obtained_at, scopes }`) is
+secret-bearing; keep it under gitignored `state/` (or a mounted secret path).
+`*.token.json` and `state/` are gitignored.
 
 **`--env-file`** loads `KEY=VALUE` pairs before anything else, so one env file
 fully describes a channel and switching channels is just swapping the path.
@@ -137,11 +142,15 @@ Secrets stay in the environment; the config references them with `${VAR}`:
   "block_cross_channel_duplicates": true,
   "min_seconds_between_uploads": 0,
   "channels": {
-    "main":   { "refresh_token": "${YT_REFRESH_TOKEN_MAIN}",   "default_category_id": "28", "default_privacy": "unlisted" },
-    "shorts": { "refresh_token": "${YT_REFRESH_TOKEN_SHORTS}", "default_category_id": "24", "default_privacy": "unlisted" }
+    "main":   { "token_file": "${YT_TOKEN_FILE_MAIN}",     "default_category_id": "28", "default_privacy": "unlisted" },
+    "shorts": { "token_file": "state/shorts.token.json",  "default_category_id": "24", "default_privacy": "unlisted" }
   }
 }
 ```
+
+Each channel's `token_file` is the **path** to the token JSON that
+`yt-authorize` writes — the secret never sits in an env value. Use a literal
+path for local dev or a `${VAR}` for a deploy-time / mounted-secret path.
 
 Config knobs:
 
@@ -161,8 +170,7 @@ Claude Code:
 claude mcp add --transport stdio yt-upload \
   --env YT_CLIENT_ID="$YT_CLIENT_ID" \
   --env YT_CLIENT_SECRET="$YT_CLIENT_SECRET" \
-  --env YT_REFRESH_TOKEN_MAIN="$YT_REFRESH_TOKEN_MAIN" \
-  --env YT_REFRESH_TOKEN_SHORTS="$YT_REFRESH_TOKEN_SHORTS" \
+  --env YT_TOKEN_FILE_MAIN="/absolute/path/to/state/main.token.json" \
   -- /absolute/path/to/bin/yt-upload-mcp --config /absolute/path/to/config.json
 ```
 
@@ -177,8 +185,7 @@ Claude Desktop (`claude_desktop_config.json`):
       "env": {
         "YT_CLIENT_ID": "...",
         "YT_CLIENT_SECRET": "...",
-        "YT_REFRESH_TOKEN_MAIN": "...",
-        "YT_REFRESH_TOKEN_SHORTS": "..."
+        "YT_TOKEN_FILE_MAIN": "/absolute/path/to/state/main.token.json"
       }
     }
   }

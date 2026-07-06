@@ -35,8 +35,9 @@ verify_channels). Hard boundary: the tool never decides *which* channel — the 
 
 ## Gotchas
 
-- **7-day token expiry.** While the OAuth consent screen is in *Testing*, refresh tokens die every 7 days. `invalid_grant` → re-run `yt-authorize`. Run `verify_channels` before an upload batch.
-- **Secrets never in git.** `config.json`, `state/`, `*.log` are gitignored; only `config.example.json` is tracked. Secrets resolve from env via `${VAR}` expansion in the config.
+- **7-day token expiry.** While the OAuth consent screen is in *Testing*, refresh tokens die every 7 days. `invalid_grant` → re-run `yt-authorize --channel <alias> --config config.json` (rewrites that channel's `token_file`). Run `verify_channels` before an upload batch.
+- **Tokens live in files, not env.** Each channel's `token_file` (config field, `${VAR}`-expandable path) points at a JSON `{ refresh_token, channel_id, obtained_at, scopes }` written by `yt-authorize` and read at `config.Load`. The env/config holds the *path*, never the secret (GOOGLE_APPLICATION_CREDENTIALS-style). The legacy `refresh_token` config field is rejected with a migration error.
+- **Secrets never in git.** `config.json`, `state/`, `*.token.json`, `*.log` are gitignored; only `config.example.json` is tracked. Client credentials resolve from env via `${VAR}` expansion; channel tokens resolve from `token_file`.
 - **stdout is the MCP protocol.** All diagnostics go to stderr; anything on stdout corrupts JSON-RPC.
 - `resolveSource` fetches arbitrary http(s) URLs (SSRF surface) with no size cap — treat as security-sensitive.
 
