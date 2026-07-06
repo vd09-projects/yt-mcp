@@ -88,17 +88,39 @@ make build    # produces bin/yt-upload-mcp and bin/yt-authorize
 
 ### 3. Authorize each channel (once per channel, or every 7 days in Testing mode)
 
-```bash
-export YT_CLIENT_ID="...apps.googleusercontent.com"
-export YT_CLIENT_SECRET="..."
+Put the shared OAuth client id/secret in a gitignored env file (see
+`.env.example`) — one file per channel is the intended model, e.g.
+`env/shorts.env`:
 
-./bin/yt-authorize --client-id "$YT_CLIENT_ID" --client-secret "$YT_CLIENT_SECRET"
+```bash
+# env/shorts.env  (chmod 600; gitignored)
+YT_CLIENT_ID=...apps.googleusercontent.com
+YT_CLIENT_SECRET=...
+```
+
+```bash
+./bin/yt-authorize --config config.json --env-file env/shorts.env
 ```
 
 Open the printed URL, sign in with the account that manages the target
 channel (pick the right brand account if prompted), and approve. The CLI
-prints **which channel the token controls** plus the refresh token. Export
-it, e.g. `YT_REFRESH_TOKEN_MAIN`. Repeat per channel.
+prints **which channel the token controls** plus the refresh token. Add it to
+that same env file under the alias its channel block references, e.g.
+`YT_REFRESH_TOKEN_SHORTS=...`. Repeat per channel (a separate env file each).
+
+**`--env-file`** loads `KEY=VALUE` pairs before anything else, so one env file
+fully describes a channel and switching channels is just swapping the path.
+Values in the file **override** the shell environment (file-wins). Credential
+precedence, highest first:
+
+- **`yt-authorize`:** explicit `--client-id`/`--client-secret` flag → `--config`
+  oauth block → `--env-file` → shell env.
+- **`yt-upload-mcp`:** `--env-file` → shell env (config.json expands `${VAR}`
+  against whichever wins).
+
+The flag is optional; omit it to use the plain shell environment as before.
+Prefer `chmod 600` on real env files — the loader warns if one is
+group/world-readable, and never logs a key or value.
 
 ### 4. Configure
 

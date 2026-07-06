@@ -39,23 +39,34 @@ func main() {
 	log.SetFlags(0)
 
 	cfgPath := flag.String("config", "", "optional config.json to read the OAuth client credentials from")
-	clientID := flag.String("client-id", os.Getenv("YT_CLIENT_ID"), "OAuth client id (or set YT_CLIENT_ID)")
-	clientSecret := flag.String("client-secret", os.Getenv("YT_CLIENT_SECRET"), "OAuth client secret (or set YT_CLIENT_SECRET)")
+	clientID := flag.String("client-id", "", "OAuth client id (or set YT_CLIENT_ID / --env-file)")
+	clientSecret := flag.String("client-secret", "", "OAuth client secret (or set YT_CLIENT_SECRET / --env-file)")
 	extraScopes := flag.String("scopes", "", "comma-separated EXTRA OAuth scopes to request beyond the upload defaults, e.g. https://www.googleapis.com/auth/yt-analytics.readonly for a future analytics server. Prefer minting a SEPARATE token per capability (least privilege) over one token with every scope")
+	envFile := flag.String("env-file", "", "optional dotenv file of KEY=VALUE secrets, loaded before credentials resolve; file values override the shell environment")
 	flag.Parse()
 
+	// Load the env file (if any) first, so both config.json ${VAR} expansion and
+	// the os.Getenv fallback below see its values. File-wins — see LoadEnvFile.
+	if *envFile != "" {
+		if err := config.LoadEnvFile(*envFile); err != nil {
+			log.Fatal(err)
+		}
+	}
+
+	var oc *config.OAuthClient
 	if *cfgPath != "" {
 		// OAuth-only load: on first run the per-channel refresh tokens don't
 		// exist yet, so full config validation would (correctly) fail.
-		oc, err := config.LoadOAuthOnly(*cfgPath)
+		loaded, err := config.LoadOAuthOnly(*cfgPath)
 		if err != nil {
 			log.Fatal(err)
 		}
-		*clientID = oc.ClientID
-		*clientSecret = oc.ClientSecret
+		oc = loaded
 	}
-	if *clientID == "" || *clientSecret == "" {
-		log.Fatal("client credentials required: pass --config, or --client-id/--client-secret, or set YT_CLIENT_ID/YT_CLIENT_SECRET")
+
+	id, secret := resolveCreds(*clientID, *clientSecret, oc)
+	if id == "" || secret == "" {
+		log.Fatal("client credentials required: pass --client-id/--client-secret, --config, --env-file, or set YT_CLIENT_ID/YT_CLIENT_SECRET")
 	}
 
 	// Loopback redirect on a random port — allowed for "Desktop app" OAuth
@@ -82,9 +93,9 @@ func main() {
 		log.Printf("requesting %d scope(s): %s", len(scopes), strings.Join(scopes, " "))
 	}
 
-	oc := &oauth2.Config{
-		ClientID:     *clientID,
-		ClientSecret: *clientSecret,
+	oauthCfg := &oauth2.Config{
+		ClientID:     id,
+		ClientSecret: secret,
 		Endpoint:     google.Endpoint,
 		RedirectURL:  fmt.Sprintf("http://127.0.0.1:%d/callback", port),
 		Scopes:       scopes,
@@ -98,7 +109,7 @@ func main() {
 
 	// AccessTypeOffline + prompt=consent guarantees a refresh token is
 	// issued even if this client has been consented before.
-	authURL := oc.AuthCodeURL(state,
+	authURL := oauthCfg.AuthCodeURL(state,
 		oauth2.AccessTypeOffline,
 		oauth2.SetAuthURLParam("prompt", "consent"))
 
@@ -137,7 +148,7 @@ func main() {
 	}
 
 	ctx := context.Background()
-	tok, err := oc.Exchange(ctx, code)
+	tok, err := oauthCfg.Exchange(ctx, code)
 	if err != nil {
 		log.Fatalf("authorization code exchange failed: %v", err)
 	}
@@ -147,7 +158,7 @@ func main() {
 
 	// Show which channel this token actually controls, so it doesn't get
 	// pasted under the wrong alias in the config.
-	svc, err := youtube.NewService(ctx, option.WithTokenSource(oc.TokenSource(ctx, tok)))
+	svc, err := youtube.NewService(ctx, option.WithTokenSource(oauthCfg.TokenSource(ctx, tok)))
 	if err != nil {
 		log.Fatalf("build youtube client: %v", err)
 	}
@@ -172,4 +183,34 @@ func main() {
 	shutdownCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	_ = srv.Shutdown(shutdownCtx)
+}
+
+// resolveCreds picks the OAuth client id/secret by precedence, highest first:
+//
+//  1. explicit --client-id / --client-secret flags (flagID, flagSecret)
+//  2. the --config oauth block (oc, nil when --config was not passed)
+//  3. the YT_CLIENT_ID / YT_CLIENT_SECRET environment variables
+//
+// Because --env-file is loaded via godotenv.Overload before this runs, the
+// env fallback (3) already reflects any env-file values, and an env-file entry
+// beats the ambient shell — while an explicit flag or config value still wins
+// over the file. id and secret are resolved independently, so a flag can supply
+// one and config/env the other.
+func resolveCreds(flagID, flagSecret string, oc *config.OAuthClient) (id, secret string) {
+	id, secret = flagID, flagSecret
+	if oc != nil {
+		if id == "" {
+			id = oc.ClientID
+		}
+		if secret == "" {
+			secret = oc.ClientSecret
+		}
+	}
+	if id == "" {
+		id = os.Getenv("YT_CLIENT_ID")
+	}
+	if secret == "" {
+		secret = os.Getenv("YT_CLIENT_SECRET")
+	}
+	return id, secret
 }
