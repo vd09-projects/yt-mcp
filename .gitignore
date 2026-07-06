@@ -4,5 +4,12 @@ config.json
 *.log
 .DS_Store
 
+# Secret-bearing env files (client secret + refresh tokens). Only .env.example
+# is tracked — never commit a real env file.
+.env
+*.env
+!.env.example
+env/
+
 # Claude handoff state — per-machine, regenerable; never commit
 .claude/handoff/

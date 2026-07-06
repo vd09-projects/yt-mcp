@@ -3,6 +3,7 @@ module yt-mcp
 go 1.23.0
 
 require (
+	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.0.0
 	golang.org/x/oauth2 v0.24.0
 	google.golang.org/api v0.214.0

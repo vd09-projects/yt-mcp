@@ -34,7 +34,16 @@ func main() {
 		defaultCfg = "config.json"
 	}
 	cfgPath := flag.String("config", defaultCfg, "path to the JSON config file")
+	envFile := flag.String("env-file", "", "optional dotenv file of KEY=VALUE secrets (e.g. YT_CLIENT_ID, YT_REFRESH_TOKEN_*), loaded before config; file values override the shell environment")
 	flag.Parse()
+
+	// Load the env file (if any) BEFORE config.Load so its ${VAR} references
+	// resolve against it. File-wins precedence — see config.LoadEnvFile.
+	if *envFile != "" {
+		if err := config.LoadEnvFile(*envFile); err != nil {
+			log.Fatal(err)
+		}
+	}
 
 	cfg, err := config.Load(*cfgPath)
 	if err != nil {
