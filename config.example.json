@@ -9,14 +9,14 @@
   "upload_chunk_size_mb": 8,
   "channels": {
     "main": {
-      "refresh_token": "${YT_REFRESH_TOKEN_MAIN}",
+      "token_file": "${YT_TOKEN_FILE_MAIN}",
       "description": "Primary long-form channel",
       "default_category_id": "28",
       "default_privacy": "unlisted",
       "default_tags": ["tech"]
     },
     "shorts": {
-      "refresh_token": "${YT_REFRESH_TOKEN_SHORTS}",
+      "token_file": "state/shorts.token.json",
       "description": "Shorts channel",
       "default_category_id": "24",
       "default_privacy": "unlisted"

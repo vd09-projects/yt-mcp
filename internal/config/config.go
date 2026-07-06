@@ -23,9 +23,23 @@ type OAuthClient struct {
 
 // Channel is one pre-configured YouTube channel (spec §4.1 expects 2-3).
 type Channel struct {
-	// RefreshToken is the per-channel token obtained via the one-time
-	// 3-legged consent grant (see cmd/yt-authorize).
-	RefreshToken string `json:"refresh_token"`
+	// TokenFile is the path to this channel's token file (see TokenFile),
+	// written by yt-authorize and read at Load. The path is ${ENV_VAR}-
+	// expandable like the rest of the config, so deployments can point it at
+	// a mounted secret without editing the config body.
+	TokenFile string `json:"token_file"`
+
+	// RefreshTokenLegacy binds the removed `refresh_token` field purely so
+	// Load can emit a migration error instead of silently ignoring an old
+	// config. See validate.
+	RefreshTokenLegacy string `json:"refresh_token,omitempty"`
+
+	// RefreshToken is populated at Load from TokenFile — it is NOT read from
+	// the config JSON. Downstream (uploader) reads it from here unchanged.
+	RefreshToken string `json:"-"`
+	// ChannelID is populated at Load from TokenFile (may be empty on older
+	// token files); lets verify_channels detect a wrong-account token.
+	ChannelID string `json:"-"`
 
 	DefaultCategoryID string   `json:"default_category_id,omitempty"`
 	DefaultPrivacy    string   `json:"default_privacy,omitempty"`
@@ -82,6 +96,17 @@ func Load(path string) (*Config, error) {
 	if cfg.UploadChunkSizeMB <= 0 {
 		cfg.UploadChunkSizeMB = 8
 	}
+
+	// Resolve each channel's refresh token from its token file. Done after
+	// validate so a structurally-bad config fails before we touch the disk.
+	for alias, ch := range cfg.Channels {
+		tf, err := ReadTokenFile(ch.TokenFile)
+		if err != nil {
+			return nil, fmt.Errorf("config: channel %q: %w", alias, err)
+		}
+		ch.RefreshToken = tf.RefreshToken
+		ch.ChannelID = tf.ChannelID
+	}
 	return &cfg, nil
 }
 
@@ -93,8 +118,14 @@ func (c *Config) validate() error {
 		return fmt.Errorf("config: at least one channel must be configured")
 	}
 	for alias, ch := range c.Channels {
-		if ch == nil || ch.RefreshToken == "" {
-			return fmt.Errorf("config: channel %q is missing refresh_token (run yt-authorize for it)", alias)
+		if ch == nil {
+			return fmt.Errorf("config: channel %q is null", alias)
+		}
+		if ch.RefreshTokenLegacy != "" {
+			return fmt.Errorf("config: channel %q uses the removed `refresh_token` field; replace it with `token_file` (path to the JSON written by yt-authorize) — see config.example.json", alias)
+		}
+		if ch.TokenFile == "" {
+			return fmt.Errorf("config: channel %q is missing token_file (run yt-authorize --channel %s to create it)", alias, alias)
 		}
 		if ch.DefaultPrivacy != "" && !ValidPrivacy(ch.DefaultPrivacy) {
 			return fmt.Errorf("config: channel %q has invalid default_privacy %q (must be public, unlisted or private)", alias, ch.DefaultPrivacy)
@@ -128,6 +159,33 @@ func LoadOAuthOnly(path string) (*OAuthClient, error) {
 		return nil, fmt.Errorf("config: oauth.client_id and oauth.client_secret are required (set the env vars referenced in the config)")
 	}
 	return &cfg.OAuth, nil
+}
+
+// ResolveTokenFilePath returns the token_file path configured for a channel
+// alias, expanding ${ENV_VAR} references. Used by yt-authorize, which must know
+// WHERE to write a channel's token before that token (and thus a fully valid
+// config) exists — so it deliberately skips channel token validation.
+func ResolveTokenFilePath(path, alias string) (string, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("read config: %w", err)
+	}
+	expanded := os.Expand(string(raw), os.Getenv)
+
+	var cfg struct {
+		Channels map[string]*Channel `json:"channels"`
+	}
+	if err := json.Unmarshal([]byte(expanded), &cfg); err != nil {
+		return "", fmt.Errorf("parse config %s: %w", path, err)
+	}
+	ch, ok := cfg.Channels[alias]
+	if !ok {
+		return "", fmt.Errorf("config: no channel %q (known channels come from config.json)", alias)
+	}
+	if ch.TokenFile == "" {
+		return "", fmt.Errorf("config: channel %q has no token_file path", alias)
+	}
+	return ch.TokenFile, nil
 }
 
 // ValidPrivacy reports whether p is a privacy status the YouTube API accepts.
