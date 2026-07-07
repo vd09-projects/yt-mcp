@@ -25,7 +25,8 @@ internal/
   uploader/          the pipeline: validate -> idempotency -> guards ->
                      videos.insert -> thumbnails.set -> playlistItems.insert,
                      with rollback + error categorization
-  mcptool/           MCP tool surface: upload_video, list_channels, verify_channels
+  mcptool/           MCP tool surface: upload_video, edit_video_metadata,
+                     list_channels, verify_channels
 ```
 
 One repo, shared internals (`config`, `store`, error taxonomy), but **one
@@ -294,6 +295,64 @@ calling application can discover where it may publish.
 1-quota-unit `channels.list` per channel. Confirms each refresh token still
 works and reports the channel title/ID it controls. Run before batches while
 in Testing mode (7-day token expiry).
+
+### `edit_video_metadata`
+
+Corrects the snippet metadata of an **already-published** video — title,
+description, tags, `categoryId`, `defaultLanguage` — without re-uploading.
+It is a read-modify-write against the YouTube Data API v3: `videos.list(snippet)`
+fetches the current snippet, the requested fields are merged in, and
+`videos.update(snippet)` writes the whole snippet back. Because `videos.update`
+**replaces** the entire snippet, the merge always starts from the fetched
+current value, so untouched fields (including read-only ones like `channelId`
+and `thumbnails`) are preserved by construction. This edits only metadata; it
+never changes the video file, and it does not touch the idempotency ledger (an
+edit targets a caller-supplied `video_id`, so it cannot double-publish).
+
+| Field | Required | Notes |
+|---|---|---|
+| `channel` | yes | configured alias that owns the video; see `list_channels` |
+| `video_id` | yes | the id of the already-published video to correct |
+| `title` | no | omit to preserve; required field — **cannot be cleared** |
+| `description` | no | omit to preserve; pass `""` to clear |
+| `tags` | no | omit to preserve; pass `[]` to clear; same 500-character budget as `upload_video` |
+| `category_id` | no | omit to preserve; numeric; required field — **cannot be cleared** |
+| `default_language` | no | omit to preserve; pass `""` to clear |
+
+**Preserve vs. clear.** Each editable field is three-valued: **omit** the field
+to *preserve* its current value, provide a non-empty value to *overwrite*, or
+provide an *empty* value (`""` / `[]`) to *clear* it. `title` and `category_id`
+are required by the API, so a request that tries to clear either is rejected up
+front (`invalid_request` at the `validate` stage) before any quota is spent.
+
+The success response lists exactly which fields actually changed:
+
+```json
+{
+  "status": "success",
+  "channel": "main",
+  "video_id": "dQw4w9WgXcQ",
+  "video_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+  "updated_fields": ["title", "tags"],
+  "warnings": []
+}
+```
+
+Failures use the same structured `{stage, category, ...}` taxonomy as
+`upload_video`; the edit-path stages are `validate`, `fetch_video`, and
+`update_video` (e.g. an unknown/foreign `video_id` fails at `fetch_video`
+`invalid_request`; editing a video the routed channel does not own fails at
+`update_video` `auth_error`).
+
+**Quota.** ~51 units per edit — `videos.list` (1 unit) + `videos.update`
+(50 units) — drawn from the shared 10,000/day pool, separate from the upload
+count cap (see [Quota](#quota-spec-52)).
+
+**This is a correction utility, not a views/discovery lever.** Use it to fix a
+typo'd title, a wrong category, or missing/incorrect tags on an existing video.
+Editing metadata after the fact does **not** boost reach — as with tags on
+upload, the Shorts feed ranks on engagement and retention, not on metadata
+churn (see [Tags: what they do and don't do](#tags-what-they-do-and-dont-do)).
 
 ## Idempotency and retries (spec §6)
 
