@@ -88,7 +88,7 @@ func Categorize(err error) (Category, string) {
 				switch item.Reason {
 				case "quotaExceeded", "dailyLimitExceeded", "rateLimitExceeded",
 					"userRateLimitExceeded", "uploadLimitExceeded":
-					return CatQuota, "YouTube Data API quota or upload limit hit; videos.insert costs 100 units of the default 10,000/day project pool (spec §5.2)"
+					return CatQuota, "YouTube Data API quota or upload limit hit; videos.insert costs 1 unit but is separately capped at ~100 uploads/day (spec §5.2)"
 				}
 			}
 			return CatAuth, "the authorized account is not permitted to perform this action on the target channel"

@@ -204,7 +204,7 @@ The server logs to stderr only; stdout is reserved for the MCP protocol.
 | `source` | yes | local absolute path **or** http(s) URL (e.g. GitHub-hosted) |
 | `title` | yes | ≤ 100 chars, no `<` `>` |
 | `description` | yes | ≤ 5000 bytes; hashtags can live here |
-| `tags` | no | backend keywords, distinct from hashtags; ~500-char combined limit |
+| `tags` | no | backend keywords, distinct from hashtags; 500-**character** combined budget (see [Tags: what they do and don't do](#tags-what-they-do-and-dont-do)) |
 | `category_id` | yes* | numeric; *falls back to the channel default |
 | `privacy_status` | no | `public` / `unlisted` / `private`; defaults to `unlisted`, never silently public |
 | `self_declared_made_for_kids` | yes | explicit `true`/`false` (COPPA) |
@@ -247,6 +247,42 @@ Categories: `auth_error`, `quota_exceeded`, `invalid_request`,
 `network_error`, `policy_violation` (local §5.3/§6 guards), `other`.
 Pipeline stages: `validate`, `idempotency_check`, `resolve_source`,
 `platform_guards`, `insert_video`, `set_thumbnail`, `add_to_playlist`.
+
+### Tags: what they do and don't do
+
+Setting tags at upload already works today — pass a `tags` array to
+`upload_video`, or rely on a channel's `default_tags` (surfaced by
+`list_channels`, applied when the caller sends no tags). They land on
+`snippet.tags` via `videos.insert`; this feature does not change the publish
+path.
+
+```json
+{
+  "channel": "shorts",
+  "source": "https://.../short.mp4",
+  "title": "She waited 20 years for this letter #Shorts",
+  "description": "A heartfelt reunion. #reddit #shortstories #sadstories",
+  "is_short": true,
+  "self_declared_made_for_kids": false,
+  "tags": ["reddit", "shortstories", "reddit stories", "sad stories", "heartfelt"]
+}
+```
+
+**The 500-character budget.** YouTube caps `snippet.tags` at a combined 500
+**characters**, counted in characters (runes), not bytes. The tool validates
+this client-side before `videos.insert` as defense-in-depth / fast-fail —
+YouTube remains the enforcing boundary. The budget is: each tag's characters,
+plus 1 comma between adjacent tags, plus 2 for the quotes YouTube wraps around
+any tag containing a space (so `Foo-Baz` costs 7, but `Foo Baz` costs 9). Over
+budget fails loudly with `invalid_request` and a hint explaining the
+accounting; the tool never auto-trims — shorten or drop tags yourself.
+
+**Tags do not meaningfully drive Shorts views.** This is a
+correction/validation feature, not a growth lever. YouTube's own docs call tags
+"not important" for discovery; the Shorts feed ranks on engagement and
+retention (hook, watch-through, likes), and title/description/hashtags matter
+far more than tags — invest there. Full evidence and the quota correction below:
+[research/tags-shorts-discovery-metadata-api/report.md](research/tags-shorts-discovery-metadata-api/report.md).
 
 ### `list_channels`
 
@@ -299,10 +335,15 @@ state dir if the history matters; deleting it resets idempotency.
 
 ## Quota (spec §5.2)
 
-Per upload: `videos.insert` 100 units, `thumbnails.set` ~50, `playlistItems.insert` ~50,
-`videos.delete` (rollback only) 50, `channels.list` (verify) 1. At 3–5
-uploads/day across all channels against the shared 10,000/day project pool,
-headroom is large; `quota_exceeded` failures carry a hint either way.
+Per upload: `videos.insert` **1 unit** (the widely-repeated legacy ~1600u
+figure is out of date — changed 2025-12-04 — but a separate hard cap of ~100
+uploads/day still applies), `thumbnails.set` ~50, `playlistItems.insert` ~50,
+`videos.delete` (rollback only) 50, `channels.list` (verify) 1. The non-insert
+calls draw the shared 10,000/day project pool; for uploads the ~100/day count
+cap, not the unit cost, is the real ceiling. At 3–5 uploads/day across all
+channels the headroom is large; `quota_exceeded` failures carry a hint either
+way. See
+[research/tags-shorts-discovery-metadata-api/report.md](research/tags-shorts-discovery-metadata-api/report.md).
 
 ## Phase 2 (explicitly deferred)
 

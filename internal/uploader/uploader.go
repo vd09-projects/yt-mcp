@@ -502,23 +502,38 @@ func normalize(req *Request, ch *config.Channel) ([]string, *StageError) {
 		return nil, invalid("validate", "description exceeds YouTube's 5000-byte limit (%d bytes)", len(req.Description))
 	}
 
-	// Tags share a combined ~500-character budget server-side (tags
-	// containing spaces are wrapped in quotes and comma-separated).
+	// Tags share a combined 500-character budget server-side, counted in
+	// characters (runes), not bytes. Reject over-budget sets before
+	// videos.insert as defense-in-depth / fast-fail; YouTube remains the
+	// enforcing boundary. The tool never auto-trims — fail loud (spec §7).
+	if budget := tagsBudget(req.Tags); budget > 500 {
+		se := invalid("validate", "tags exceed YouTube's 500-character combined limit (%d characters)", budget)
+		se.Hint = "the combined budget counts each tag's characters + 1 comma between adjacent tags + 2 for the quotes YouTube adds around any tag containing a space; shorten or drop tags to fit within 500 characters (the tool will not auto-trim for you)"
+		return nil, se
+	}
+
+	return warnings, nil
+}
+
+// tagsBudget computes YouTube's combined tag budget in characters (runes, not
+// bytes): each tag's character count, plus 1 comma between adjacent tags, plus
+// 2 for the quotes YouTube wraps around any tag containing a space. The 500
+// limit is enforced by the caller. Pure helper, isolated for table testing.
+func tagsBudget(tags []string) int {
 	total := 0
-	for _, t := range req.Tags {
-		total += len(t)
+	for _, t := range tags {
+		total += utf8.RuneCountInString(t)
+		// NOTE: strings.Contains(t, " ") only detects the ASCII space, so a
+		// tag whose only whitespace is a tab is under-counted by 2. Known
+		// minor under-count, left as-is — YouTube is the enforcing boundary.
 		if strings.Contains(t, " ") {
 			total += 2
 		}
 	}
-	if n := len(req.Tags); n > 1 {
+	if n := len(tags); n > 1 {
 		total += n - 1
 	}
-	if total > 500 {
-		return nil, invalid("validate", "tags exceed YouTube's 500-character combined limit (~%d chars)", total)
-	}
-
-	return warnings, nil
+	return total
 }
 
 // dedupResult converts a prior ledger record into a Result (spec §6: return
