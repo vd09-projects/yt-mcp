@@ -25,7 +25,7 @@ type UploadInput struct {
 	Source                     string   `json:"source" jsonschema:"video source: an absolute local file path or an http(s) URL (e.g. a GitHub-hosted file)"`
 	Title                      string   `json:"title" jsonschema:"video title, max 100 characters, must not contain < or >"`
 	Description                string   `json:"description" jsonschema:"video description, max 5000 bytes; hashtags can live here"`
-	Tags                       []string `json:"tags,omitempty" jsonschema:"optional backend keyword tags, distinct from description hashtags; combined limit ~500 characters"`
+	Tags                       []string `json:"tags,omitempty" jsonschema:"optional backend keyword tags, distinct from description hashtags; combined 500-character budget (each tag's characters + 1 comma between tags + 2 for quotes around any spaced tag)"`
 	CategoryID                 string   `json:"category_id,omitempty" jsonschema:"numeric YouTube category id from the fixed taxonomy (e.g. 28 = Science & Technology); falls back to the channel's configured default"`
 	PrivacyStatus              string   `json:"privacy_status,omitempty" jsonschema:"public, unlisted or private; if omitted defaults to the channel default and then to unlisted — never silently public"`
 	SelfDeclaredMadeForKids    *bool    `json:"self_declared_made_for_kids" jsonschema:"REQUIRED COPPA declaration demanded by the YouTube API; pass true or false explicitly"`

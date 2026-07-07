@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "yt-upload": {
+      "type": "stdio",
+      "command": "/Users/vikrantdhawan/repos/mcps/yt-mcp/bin/yt-upload-mcp",
+      "args": [
+        "--config",
+        "/Users/vikrantdhawan/repos/mcps/yt-mcp/config.json",
+        "--env-file",
+        "/Users/vikrantdhawan/repos/mcps/yt-mcp/.env"
+      ],
+      "env": {}
+    }
+  }
+}
