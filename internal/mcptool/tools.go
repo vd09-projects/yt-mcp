@@ -1,10 +1,12 @@
-// Package mcptool exposes the uploader over MCP. Three tools are registered:
+// Package mcptool exposes the uploader over MCP. Four tools are registered:
 //
-//   - upload_video    — the core capability (spec §1)
-//   - list_channels   — lets the calling application discover the statically
+//   - upload_video        — the core capability (spec §1)
+//   - list_channels       — lets the calling application discover the statically
 //     configured channel aliases and their defaults (spec §4.1)
-//   - verify_channels — cheap token health check (1 quota unit/channel);
+//   - verify_channels     — cheap token health check (1 quota unit/channel);
 //     useful while Testing-mode refresh tokens expire every 7 days (spec §5.1)
+//   - edit_video_metadata — correct the snippet metadata of an EXISTING video
+//     (title/description/tags/category/default language) via a read-modify-write
 package mcptool
 
 import (
@@ -59,6 +61,36 @@ type UploadOutput struct {
 	Hint            string `json:"hint,omitempty"`
 	RolledBack      bool   `json:"rolled_back,omitempty" jsonschema:"true if a partially-completed upload was deleted"`
 	OrphanedVideoID string `json:"orphaned_video_id,omitempty" jsonschema:"set when rollback was attempted but the delete failed, leaving a live video"`
+}
+
+// EditVideoMetadataInput edits the snippet metadata of an existing video. Each
+// editable field is a pointer: OMITTING it preserves the current value, passing
+// an empty value CLEARS it. Title and category_id are required and cannot be
+// cleared.
+type EditVideoMetadataInput struct {
+	Channel         string    `json:"channel" jsonschema:"channel alias whose OAuth token owns the video; must be one of the statically pre-configured channels (call list_channels). The caller chooses the channel — the tool never picks it."`
+	VideoID         string    `json:"video_id" jsonschema:"id of the existing video to edit; the video must belong to (and be visible to) the routed channel"`
+	Title           *string   `json:"title,omitempty" jsonschema:"new title (max 100 characters, no < or >). OMIT the field to preserve the current title. Title is REQUIRED and cannot be cleared."`
+	Description     *string   `json:"description,omitempty" jsonschema:"new description. OMIT the field to preserve the current description; pass an empty string to CLEAR it."`
+	Tags            *[]string `json:"tags,omitempty" jsonschema:"replacement backend keyword tags (combined 500-character budget). OMIT the field to preserve current tags; pass an empty array to CLEAR all tags. Tags are near-useless for discovery — this does not boost views."`
+	CategoryID      *string   `json:"category_id,omitempty" jsonschema:"new numeric YouTube category id from the fixed taxonomy. OMIT the field to preserve the current category. Category is REQUIRED and cannot be cleared."`
+	DefaultLanguage *string   `json:"default_language,omitempty" jsonschema:"new BCP-47 default language for the title/description. OMIT the field to preserve it; pass an empty string to CLEAR it."`
+}
+
+// EditVideoMetadataOutput is the structured result for both success and
+// failure. On failure it carries the pipeline stage and category.
+type EditVideoMetadataOutput struct {
+	Status        string   `json:"status" jsonschema:"success or error"`
+	Channel       string   `json:"channel,omitempty"`
+	VideoID       string   `json:"video_id,omitempty"`
+	VideoURL      string   `json:"video_url,omitempty"`
+	UpdatedFields []string `json:"updated_fields,omitempty" jsonschema:"snippet fields whose value actually changed, including intentional clears; omitted or unchanged fields are not listed"`
+	Warnings      []string `json:"warnings,omitempty"`
+
+	Stage    string `json:"stage,omitempty" jsonschema:"pipeline stage at which the failure occurred: validate | fetch_video | update_video"`
+	Category string `json:"category,omitempty" jsonschema:"auth_error | quota_exceeded | invalid_request | network_error | policy_violation | other"`
+	Error    string `json:"error,omitempty"`
+	Hint     string `json:"hint,omitempty"`
 }
 
 // ListChannelsInput is empty; the tool takes no arguments.
@@ -225,6 +257,60 @@ func Register(server *mcp.Server, up *uploader.Uploader, cfg *config.Config) {
 		}
 		return asResult(out, anyFailed), out, nil
 	})
+
+	mcp.AddTool(server, &mcp.Tool{
+		Name: "edit_video_metadata",
+		Description: "Correct the snippet metadata (title, description, tags, category, default_language) of an EXISTING video on one of the pre-configured channels, via a YouTube Data API v3 read-modify-write. " +
+			"This is a correction utility, NOT a views or discovery booster — editing metadata does not promote a video. " +
+			"The caller chooses the channel, which must own the video; the tool never picks it. " +
+			"Preserve-vs-clear: OMITTING a field preserves its current value; passing an empty value ('' or []) CLEARS it. title and category_id are required and cannot be cleared. " +
+			"Costs ~51 quota units per edit (videos.list 1 + videos.update 50), separate from the ~100-uploads/day bucket. " +
+			"On failure returns a structured error with the exact pipeline stage (validate, fetch_video, update_video) and a category (auth_error, quota_exceeded, invalid_request, network_error, policy_violation, other).",
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in EditVideoMetadataInput) (*mcp.CallToolResult, EditVideoMetadataOutput, error) {
+		req := &uploader.EditRequest{
+			Channel:         in.Channel,
+			VideoID:         in.VideoID,
+			Title:           in.Title,
+			Description:     in.Description,
+			Tags:            in.Tags,
+			CategoryID:      in.CategoryID,
+			DefaultLanguage: in.DefaultLanguage,
+		}
+
+		res, err := up.EditMetadata(ctx, req)
+		if err != nil {
+			out := editErrorOutput(in.Channel, in.VideoID, err)
+			return asResult(out, true), out, nil
+		}
+
+		out := EditVideoMetadataOutput{
+			Status:        "success",
+			Channel:       res.Channel,
+			VideoID:       res.VideoID,
+			VideoURL:      res.VideoURL,
+			UpdatedFields: res.UpdatedFields,
+			Warnings:      res.Warnings,
+		}
+		return asResult(out, false), out, nil
+	})
+}
+
+// editErrorOutput projects an edit failure onto EditVideoMetadataOutput,
+// mirroring the upload_video error-mapping block: a *uploader.StageError
+// surfaces its stage/category/error/hint; anything else falls back to CatOther.
+func editErrorOutput(channel, videoID string, err error) EditVideoMetadataOutput {
+	out := EditVideoMetadataOutput{Status: "error", Channel: channel, VideoID: videoID}
+	var se *uploader.StageError
+	if errors.As(err, &se) {
+		out.Stage = se.Stage
+		out.Category = string(se.Category)
+		out.Error = se.Err.Error()
+		out.Hint = se.Hint
+	} else {
+		out.Category = string(uploader.CatOther)
+		out.Error = err.Error()
+	}
+	return out
 }
 
 // asResult renders v as pretty JSON text content; isError marks tool-level

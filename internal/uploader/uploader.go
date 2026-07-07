@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -419,14 +418,8 @@ func normalize(req *Request, ch *config.Channel) ([]string, *StageError) {
 	}
 
 	req.Title = strings.TrimSpace(req.Title)
-	if req.Title == "" {
-		return nil, invalid("validate", "title is required (spec §4.2)")
-	}
-	if utf8.RuneCountInString(req.Title) > 100 {
-		return nil, invalid("validate", "title exceeds YouTube's 100-character limit (%d chars)", utf8.RuneCountInString(req.Title))
-	}
-	if strings.ContainsAny(req.Title, "<>") {
-		return nil, invalid("validate", "title must not contain '<' or '>' (YouTube API restriction)")
+	if se := validateTitle(req.Title); se != nil {
+		return nil, se
 	}
 
 	if strings.TrimSpace(req.Description) == "" {
@@ -450,8 +443,8 @@ func normalize(req *Request, ch *config.Channel) ([]string, *StageError) {
 	if req.CategoryID == "" {
 		return nil, invalid("validate", "category_id is required (spec §4.2: YouTube's fixed taxonomy) and channel %q has no default_category_id", req.Channel)
 	}
-	if _, err := strconv.Atoi(req.CategoryID); err != nil {
-		return nil, invalid("validate", "category_id must be a numeric YouTube category id, e.g. \"22\" (People & Blogs) or \"28\" (Science & Technology); got %q", req.CategoryID)
+	if se := validateCategoryNumeric(req.CategoryID); se != nil {
+		return nil, se
 	}
 
 	// Scheduled publishing (spec §4.2): requires privacy=private + a future
@@ -506,9 +499,8 @@ func normalize(req *Request, ch *config.Channel) ([]string, *StageError) {
 	// characters (runes), not bytes. Reject over-budget sets before
 	// videos.insert as defense-in-depth / fast-fail; YouTube remains the
 	// enforcing boundary. The tool never auto-trims — fail loud (spec §7).
-	if budget := tagsBudget(req.Tags); budget > 500 {
-		se := invalid("validate", "tags exceed YouTube's 500-character combined limit (%d characters)", budget)
-		se.Hint = "the combined budget counts each tag's characters + 1 comma between adjacent tags + 2 for the quotes YouTube adds around any tag containing a space; shorten or drop tags to fit within 500 characters (the tool will not auto-trim for you)"
+	// Shared with the edit path via validateTagsBudget.
+	if se := validateTagsBudget(req.Tags); se != nil {
 		return nil, se
 	}
 
